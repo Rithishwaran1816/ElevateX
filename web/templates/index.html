@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ElevateX — AI-Enabled Drone Photogrammetry & 3D Reconstruction</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Three.js + Loaders & Controls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navigation Bar -->
+        <header class="navbar">
+            <div class="brand">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                        <polyline points="2 17 12 22 22 17"></polyline>
+                        <polyline points="2 12 12 17 22 12"></polyline>
+                    </svg>
+                </div>
+                <div class="brand-text">
+                    <h1>Elevate<span>X</span></h1>
+                    <span class="badge sih-badge">SIH26158</span>
+                </div>
+            </div>
+
+            <!-- Sensor Status Pills -->
+            <div class="sensor-bar">
+                <div class="sensor-pill" id="sensor-gps">
+                    <span class="dot"></span> GPS: <strong class="val">CHECKING</strong>
+                </div>
+                <div class="sensor-pill" id="sensor-telemetry">
+                    <span class="dot"></span> Flight Meta: <strong class="val">CHECKING</strong>
+                </div>
+                <div class="sensor-pill" id="sensor-imu">
+                    <span class="dot"></span> IMU: <strong class="val">N/A</strong>
+                </div>
+                <div class="sensor-pill" id="sensor-rtk">
+                    <span class="dot"></span> RTK: <strong class="val">N/A</strong>
+                </div>
+                <div class="sensor-pill" id="sensor-intrinsics">
+                    <span class="dot"></span> Intrinsics: <strong class="val">AUTO</strong>
+                </div>
+            </div>
+
+            <div class="system-status">
+                <span class="badge engine-badge" id="engine-status">Checking Engine...</span>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <div class="main-layout">
+            <!-- Left Sidebar Controls -->
+            <aside class="sidebar">
+                <!-- Upload Section -->
+                <div class="card upload-card">
+                    <div class="card-header">
+                        <h2>1. Ingestion & Flight Data</h2>
+                        <button type="button" id="btn-demo-load" class="btn-sm-accent" title="Auto-load sample drone video & telemetry">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                            </svg>
+                            Demo Flight
+                        </button>
+                    </div>
+                    <form id="upload-form">
+                        <div class="form-group">
+                            <label for="video-input">Drone Video <span class="req">*</span></label>
+                            <div class="file-drop-zone" id="video-drop-zone">
+                                <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M23 7l-7 5 7 5V7z"></path>
+                                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+                                </svg>
+                                <div id="video-filename" class="drop-label">Drop MP4 / MOV / AVI or <strong>Click to Browse</strong></div>
+                                <div class="file-subtext">Supports single-pass aerial video (up to 1GB)</div>
+                                <input type="file" id="video-input" name="video" accept="video/mp4,video/quicktime,video/x-msvideo,video/*,.mp4,.mov,.avi,.mkv">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="telemetry-input">Flight Telemetry / GPS (Optional)</label>
+                            <div class="file-drop-zone small" id="tel-drop-zone">
+                                <div id="tel-filename" class="drop-label">Drop CSV, JSON, or DJI SRT</div>
+                                <input type="file" id="telemetry-input" name="telemetry" accept=".csv,.json,.srt,.txt,text/csv,application/json">
+                            </div>
+                        </div>
+
+                        <!-- Upload Progress Bar -->
+                        <div id="upload-progress-container" class="upload-progress-bar hidden">
+                            <div class="progress-track">
+                                <div id="upload-progress-fill" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <span id="upload-progress-text">Uploading: 0%</span>
+                        </div>
+
+                        <button type="submit" id="btn-upload" class="btn btn-secondary">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                            Upload & Inspect
+                        </button>
+                    </form>
+
+                    <!-- Ingested Video Details -->
+                    <div id="video-details" class="details-panel hidden">
+                        <h3>Video Stream Properties</h3>
+                        <div class="detail-row"><span>Resolution:</span> <strong id="meta-res">-</strong></div>
+                        <div class="detail-row"><span>Framerate:</span> <strong id="meta-fps">-</strong></div>
+                        <div class="detail-row"><span>Duration:</span> <strong id="meta-dur">-</strong></div>
+                        <div class="detail-row"><span>Total Frames:</span> <strong id="meta-frames">-</strong></div>
+                    </div>
+                </div>
+
+                <!-- Processing Pipeline Card -->
+                <div class="card pipeline-card">
+                    <div class="card-header">
+                        <h2>2. Reconstruction Pipeline</h2>
+                        <span id="overall-status-badge" class="badge badge-idle">IDLE</span>
+                    </div>
+
+                    <div class="stages-list">
+                        <div class="stage-item" id="stage-1">
+                            <div class="stage-icon">1</div>
+                            <div class="stage-info">
+                                <div class="stage-title">Video Ingestion & Extraction</div>
+                                <div class="stage-desc" id="stage-1-desc">Uniform motion sampling</div>
+                            </div>
+                            <span class="stage-badge badge-waiting">WAITING</span>
+                        </div>
+
+                        <div class="stage-item" id="stage-2">
+                            <div class="stage-icon">2</div>
+                            <div class="stage-info">
+                                <div class="stage-title">Frame Quality & CLAHE</div>
+                                <div class="stage-desc" id="stage-2-desc">Laplacian blur & duplicate filter</div>
+                            </div>
+                            <span class="stage-badge badge-waiting">WAITING</span>
+                        </div>
+
+                        <div class="stage-item" id="stage-3">
+                            <div class="stage-icon">3</div>
+                            <div class="stage-info">
+                                <div class="stage-title">SfM & Dense Cloud</div>
+                                <div class="stage-desc" id="stage-3-desc">Multi-view epipolar geometry</div>
+                            </div>
+                            <span class="stage-badge badge-waiting">WAITING</span>
+                        </div>
+
+                        <div class="stage-item" id="stage-4">
+                            <div class="stage-icon">4</div>
+                            <div class="stage-info">
+                                <div class="stage-title">Surface Mesh Generation</div>
+                                <div class="stage-desc" id="stage-4-desc">Screened Poisson Reconstruction</div>
+                            </div>
+                            <span class="stage-badge badge-waiting">WAITING</span>
+                        </div>
+
+                        <div class="stage-item" id="stage-5">
+                            <div class="stage-icon">5</div>
+                            <div class="stage-info">
+                                <div class="stage-title">Texture Baking & 3D Export</div>
+                                <div class="stage-desc" id="stage-5-desc">Vertex coloring & GLB packaging</div>
+                            </div>
+                            <span class="stage-badge badge-waiting">WAITING</span>
+                        </div>
+
+                        <div class="stage-item" id="stage-6">
+                            <div class="stage-icon">6</div>
+                            <div class="stage-info">
+                                <div class="stage-title">Georeferencing Layer</div>
+                                <div class="stage-desc" id="stage-6-desc">WGS84 / UTM Coordinate alignment</div>
+                            </div>
+                            <span class="stage-badge badge-waiting">WAITING</span>
+                        </div>
+
+                        <div class="stage-item" id="stage-7">
+                            <div class="stage-icon">7</div>
+                            <div class="stage-info">
+                                <div class="stage-title">Quality & Metrics Report</div>
+                                <div class="stage-desc" id="stage-7-desc">SIH compliance evaluation</div>
+                            </div>
+                            <span class="stage-badge badge-waiting">WAITING</span>
+                        </div>
+                    </div>
+
+                    <button id="btn-start-process" class="btn btn-primary" disabled>
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                        Execute 3D Reconstruction
+                    </button>
+                </div>
+            </aside>
+
+            <!-- Center/Right 3D Viewer & Analytics -->
+            <main class="viewer-section">
+                <!-- Viewer Top Bar Controls -->
+                <div class="viewer-toolbar">
+                    <div class="toolbar-group">
+                        <label>Display Mode:</label>
+                        <select id="select-render-mode">
+                            <option value="textured">Textured Surface Mesh</option>
+                            <option value="wireframe">Wireframe Mesh</option>
+                            <option value="dense_pcd">Dense Point Cloud</option>
+                            <option value="sparse_pcd">Sparse Point Cloud</option>
+                        </select>
+                    </div>
+
+                    <div class="toolbar-group">
+                        <label>Point Size:</label>
+                        <input type="range" id="slider-point-size" min="1" max="10" value="3">
+                    </div>
+
+                    <div class="toolbar-group">
+                        <button id="btn-measure" class="tool-btn" title="Point to Point 3D Distance Ruler">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M2 12h20M7 8v8M17 8v8"></path>
+                            </svg>
+                            Measure Distance
+                        </button>
+                        <button id="btn-reset-cam" class="tool-btn" title="Reset Camera View">Reset Camera</button>
+                        <button id="btn-fullscreen" class="tool-btn" title="Fullscreen View">Fullscreen</button>
+                    </div>
+                </div>
+
+                <!-- Three.js Canvas Container -->
+                <div class="canvas-wrapper" id="canvas-container">
+                    <div id="viewer-placeholder" class="viewer-overlay">
+                        <div class="placeholder-content">
+                            <div class="placeholder-icon">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                                </svg>
+                            </div>
+                            <h3>Interactive 3D Photogrammetry Viewer</h3>
+                            <p>Upload a drone video and click "Execute 3D Reconstruction" to generate and inspect real-time 3D models.</p>
+                        </div>
+                    </div>
+
+                    <!-- Measurement HUD Overlay -->
+                    <div id="measurement-hud" class="measurement-hud hidden">
+                        <div class="hud-title">3D Inspection Ruler</div>
+                        <div class="hud-body">
+                            <div>Point 1: <span id="m-p1">-</span></div>
+                            <div>Point 2: <span id="m-p2">-</span></div>
+                            <div class="hud-dist">Calculated Distance: <strong id="m-dist">-</strong></div>
+                        </div>
+                        <div class="hud-hint">Click 2 vertices on the model to measure.</div>
+                    </div>
+                </div>
+
+                <!-- Bottom Analytics & Quality Summary Panel -->
+                <div class="analytics-panel">
+                    <div class="stat-card">
+                        <div class="stat-label">Model Vertices</div>
+                        <div class="stat-value" id="stat-vertices">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Mesh Faces</div>
+                        <div class="stat-value" id="stat-faces">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Dense Points</div>
+                        <div class="stat-value" id="stat-dense-pts">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Spatial Georeferencing</div>
+                        <div class="stat-value" id="stat-georef">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Processing Duration</div>
+                        <div class="stat-value" id="stat-time">-</div>
+                    </div>
+                </div>
+
+                <!-- Report Tabs -->
+                <div class="tabs-container">
+                    <div class="tab-headers">
+                        <button class="tab-btn active" data-tab="tab-quality">Quality Report</button>
+                        <button class="tab-btn" data-tab="tab-georef">Georeferencing Report</button>
+                    </div>
+                    <div class="tab-content active" id="tab-quality">
+                        <pre id="quality-json-viewer">// Complete Quality Assessment Report will appear here upon pipeline completion.</pre>
+                    </div>
+                    <div class="tab-content" id="tab-georef">
+                        <pre id="georef-json-viewer">// Georeferencing metadata will appear here.</pre>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script src="/static/js/viewer.js"></script>
+</body>
+</html>
