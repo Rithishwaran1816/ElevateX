@@ -80,6 +80,44 @@ class ImagePreprocessor:
 
         return np.clip(result, 0, 255).astype(np.uint8)
 
+    @staticmethod
+    def apply_dynamic_object_mask(image: np.ndarray, yolo_model=None, conf_threshold: float = 0.35) -> np.ndarray:
+        """
+        Detect and mask dynamic objects (people, vehicles, moving objects) to prevent
+        false SIFT correspondences across drone video frames.
+        Masks the detected bounding box by applying smooth Gaussian blur / inpainting.
+        """
+        # Dynamic object class IDs in COCO (person=0, bicycle=1, car=2, motorcycle=3,
+        # airplane=4, bus=5, train=6, truck=7, boat=8, bird=14, cat=15, dog=16, horse=17, sheep=18, cow=19)
+        DYNAMIC_CLASSES = {0, 1, 2, 3, 4, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19}
+        if yolo_model is None:
+            return image
+
+        try:
+            results = yolo_model(image, verbose=False, conf=conf_threshold)
+            out_img = image.copy()
+            for r in results:
+                boxes = r.boxes
+                if boxes is None:
+                    continue
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    if cls_id in DYNAMIC_CLASSES:
+                        xyxy = box.xyxy[0].cpu().numpy().astype(int)
+                        x1, y1, x2, y2 = xyxy
+                        h, w = image.shape[:2]
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(w, x2), min(h, y2)
+                        if x2 > x1 and y2 > y1:
+                            roi = out_img[y1:y2, x1:x2]
+                            # Blur / smooth the dynamic object region to eliminate high-frequency SIFT corners
+                            blurred_roi = cv2.GaussianBlur(roi, (51, 51), 0)
+                            out_img[y1:y2, x1:x2] = blurred_roi
+            return out_img
+        except Exception as e:
+            logger.warning(f"[PREPROC] Dynamic object masking error: {e}")
+            return image
+
     # ------------------------------------------------------------------
     # Main preprocessing entry point
     # ------------------------------------------------------------------
@@ -108,6 +146,15 @@ class ImagePreprocessor:
                        config.KEYFRAME_SELECTION.get("sky_upper_fraction", 0.25))
         sky_strength = config.IMAGE_PREPROCESSING.get("sky_mask_strength", 0.5)
 
+        yolo_model = None
+        if mask_dynamic_objects:
+            try:
+                from ultralytics import YOLO
+                yolo_model = YOLO("yolov8n.pt")
+                logger.info("[PREPROC] Loaded YOLO model for dynamic object masking.")
+            except Exception as e:
+                logger.warning(f"[PREPROC] Could not initialize YOLO for dynamic masking: {e}")
+
         for f in image_files:
             img = cv2.imread(str(f))
             if img is None:
@@ -116,7 +163,11 @@ class ImagePreprocessor:
 
             processed = img.copy()
 
-            # 1. CLAHE illumination normalisation
+            # 1. Dynamic object masking (vehicles, people)
+            if mask_dynamic_objects and yolo_model is not None:
+                processed = self.apply_dynamic_object_mask(processed, yolo_model=yolo_model)
+
+            # 2. CLAHE illumination normalisation
             if enable_clahe:
                 processed = self.apply_clahe(
                     processed,
@@ -124,11 +175,11 @@ class ImagePreprocessor:
                     grid_size=config.IMAGE_PREPROCESSING["clahe_grid_size"]
                 )
 
-            # 2. Edge-preserving denoising
+            # 3. Edge-preserving denoising
             if enable_denoising:
                 processed = self.apply_subtle_denoising(processed)
 
-            # 3. Soft sky suppression
+            # 4. Soft sky suppression
             if enable_sky_mask:
                 processed = self.apply_sky_mask(processed,
                                                 sky_upper_fraction=sky_fraction,
@@ -145,6 +196,6 @@ class ImagePreprocessor:
             "clahe_applied": enable_clahe,
             "denoising_applied": enable_denoising,
             "sky_mask_applied": enable_sky_mask,
-            "dynamic_masking_applied": mask_dynamic_objects,
+            "dynamic_masking_applied": mask_dynamic_objects and (yolo_model is not None),
             "files": processed_files
         }

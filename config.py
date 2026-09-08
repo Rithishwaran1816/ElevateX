@@ -38,10 +38,10 @@ for folder in [
 # Frame Extraction Parameters
 # ---------------------------------------------------------------------------
 FRAME_EXTRACTION = {
-    # Initial extraction pass — sample more than needed; quality filter prunes down
-    "fps_sample_rate": 3.0,       # Extract 3 frames per second (candidate pool)
-    "frame_interval": 10,          # Fallback interval if fps calculation not used
-    "max_frames": 600,             # Upper bound for initial candidate pool
+    # Initial extraction pass — sample candidate pool from drone video
+    "fps_sample_rate": 4.0,       # Extract 4 frames per second (candidate pool)
+    "frame_interval": 8,           # Fallback interval if fps calculation not used
+    "max_frames": 700,             # Upper bound for initial candidate pool
     "min_frames": 30,              # Minimum frames required for multi-view SfM
     "target_width": 1920,          # Full resolution for COLMAP (resize only if larger)
     "target_height": 1080,         # Full resolution for COLMAP
@@ -55,21 +55,23 @@ FRAME_EXTRACTION = {
 # Keyframe Selection Parameters — intelligent selection from candidate pool
 # ---------------------------------------------------------------------------
 KEYFRAME_SELECTION = {
-    "target_keyframes": 100,       # Reduced from 175 — more spacing = more parallax
+    "target_keyframes": 160,       # Optimal keyframe count for continuous orbital SfM & dense MVS
     "min_keyframes": 30,           # Absolute minimum to allow COLMAP to proceed
-    "max_keyframes": 150,          # Hard cap
+    "max_keyframes": 200,          # Hard cap
     # Sharpness filtering
-    "blur_threshold": 60.0,        # Laplacian variance minimum for acceptance
-    "adaptive_blur_percentile": 25, # Use 25th-percentile sharpness as fallback threshold
+    "blur_threshold": 40.0,        # Laplacian variance minimum floor
+    "adaptive_blur_percentile": 15, # Use 15th-percentile sharpness as adaptive threshold
     # Brightness filtering
     "min_brightness": 30.0,        # Minimum average luminance
     "max_brightness": 240.0,       # Maximum average luminance
     # Motion / parallax
-    "min_motion_magnitude": 1.5,   # Minimum optical flow magnitude between samples
-    "max_motion_magnitude": 35.0,  # Maximum — very fast motion = motion blur, skip
-    # Near-duplicate suppression
-    "min_histogram_distance": 0.03, # Histogram L1-distance threshold (higher = more dissimilar required)
-    "min_frame_spacing": 3,         # Minimum video frames between accepted keyframes
+    "min_motion_magnitude": 0.6,   # Minimum optical flow magnitude between samples
+    "max_motion_magnitude": 45.0,  # Maximum — very fast motion = motion blur, skip
+    # Near-duplicate suppression (strictly identifies stationary hovering frames)
+    "min_histogram_distance": 0.015, # Histogram L1-distance threshold
+    "min_frame_spacing": 2,         # Minimum video frames between accepted keyframes
+    "duplicate_ssim_threshold": 0.985, # Structural similarity threshold for duplicate detection
+    "duplicate_hist_threshold": 0.995, # Histogram correlation threshold for duplicate detection
     # Sky / building heuristic
     "sky_upper_fraction": 0.25,    # Upper 25% of frame is considered sky zone
 }
@@ -78,11 +80,12 @@ KEYFRAME_SELECTION = {
 # Image Preprocessing Parameters
 # ---------------------------------------------------------------------------
 FRAME_QUALITY = {
-    "blur_threshold": 60.0,               # Kept for backward-compatibility
+    "blur_threshold": 40.0,               # Kept for backward-compatibility
     "min_brightness": 30.0,
     "max_brightness": 240.0,
-    "duplicate_ssim_threshold": 0.95,
-    "duplicate_hist_threshold": 0.98,
+    "duplicate_ssim_threshold": 0.985,
+    "duplicate_hist_threshold": 0.995,
+    "min_histogram_distance": 0.015,
 }
 
 IMAGE_PREPROCESSING = {
@@ -90,7 +93,7 @@ IMAGE_PREPROCESSING = {
     "clahe_clip_limit": 2.0,
     "clahe_grid_size": (8, 8),
     "enable_denoising": True,
-    "enable_dynamic_object_masking": False,  # Optional AI-based human/vehicle mask
+    "enable_dynamic_object_masking": True,   # AI-based human/vehicle/moving object mask
     "enable_sky_mask": True,        # Soft-suppress sky features during preprocessing
     "sky_mask_strength": 0.5,       # 0 = no suppression, 1 = full suppression
 }
@@ -105,8 +108,8 @@ RECONSTRUCTION = {
     "min_inliers": 25,              # Minimum RANSAC inliers to accept two-view geometry
     "focal_length_prior_factor": 1.2, # Prior focal length = max(w, h) * factor
     "dense_downsample_voxel": 0.02,
-    "outlier_nb_neighbors": 30,
-    "outlier_std_ratio": 1.5,
+    "outlier_nb_neighbors": 20,
+    "outlier_std_ratio": 2.5,
     "poisson_depth": 9,             # Octree depth for Poisson surface reconstruction
     "ball_pivoting_radii": [0.02, 0.04, 0.08]
 }
@@ -118,12 +121,12 @@ COLMAP_PARAMS = {
     # Feature extraction
     "camera_model": "OPENCV",       # Full radial + tangential distortion model
     "single_camera": True,          # CRITICAL: Enforce shared intrinsics for all images
-    "sift_max_features": 4096,      # High density for building facades and chimneys
+    "sift_max_features": 8192,      # High density for building facades and architectural details
     "sift_estimate_affine_shape": False,
     "sift_domain_size_pooling": False,
 
     # Sequential matching (optimal for drone video)
-    "sequential_overlap": 20,       # Match each frame to ±20 neighbors
+    "sequential_overlap": 25,       # Match each frame to ±25 neighbors
     "sequential_quadratic_overlap": True,  # Quadratic overlap for orbital paths
     "sequential_loop_detection": False,    # Disabled unless vocab tree is provided
 
@@ -156,10 +159,10 @@ VALIDATION = {
 # Open3D Point Cloud Cleaning Parameters
 # ---------------------------------------------------------------------------
 POINT_CLOUD_CLEANING = {
-    "statistical_nb_neighbors": 30,
-    "statistical_std_ratio": 1.5,
-    "radius_nb_points": 10,         # Minimum points in radius sphere
-    "radius_radius_factor": 2.0,    # Radius = factor * avg nearest neighbor distance
+    "statistical_nb_neighbors": 20,
+    "statistical_std_ratio": 2.5,   # Preserves real building surfaces while stripping isolated floating noise
+    "radius_nb_points": 6,          # Minimum points in radius sphere
+    "radius_radius_factor": 3.0,    # Radius = factor * avg nearest neighbor distance
     "voxel_downsample": False,      # Disabled by default to preserve detail
     "voxel_size": 0.05,
 }

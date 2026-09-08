@@ -178,8 +178,10 @@ def main():
     telemetry_path = args.telemetry
 
     if not video_path:
-        # Check if video exists in input directory
-        existing_videos = list(config.VIDEOS_DIR.glob("*.mp4")) + list(config.VIDEOS_DIR.glob("*.mov"))
+        # Check if video exists in input directory (prefer real footage over synthetic sample)
+        real_videos = [v for v in config.VIDEOS_DIR.glob("*.mp4") if "sample" not in v.name.lower()] + \
+                      [v for v in config.VIDEOS_DIR.glob("*.mov") if "sample" not in v.name.lower()]
+        existing_videos = real_videos if real_videos else (list(config.VIDEOS_DIR.glob("*.mp4")) + list(config.VIDEOS_DIR.glob("*.mov")))
         if existing_videos:
             video_path = str(existing_videos[0])
             print(f"Found existing input video: {video_path}")
@@ -263,7 +265,9 @@ def main():
     # -------------------------------------------------------------
     print("\n>>> [STAGE 4/7] 3D MESH GENERATION")
     mesh_gen = MeshGenerator()
-    mesh_res = mesh_gen.generate_mesh()
+    mesh_res = mesh_gen.generate_mesh(
+        point_cloud_path=rec_res.get('clean_dense_ply') or rec_res.get('dense_ply') or rec_res.get('sparse_ply')
+    )
     print(f" -> Method: {mesh_res['method_used']} Surface Reconstruction")
     print(f" -> Vertices: {mesh_res['vertices_count']:,} | Triangles: {mesh_res['faces_count']:,}")
     print(f" -> Mesh Output: {mesh_res['mesh_ply']}")

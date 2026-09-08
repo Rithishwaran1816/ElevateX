@@ -78,10 +78,20 @@ class PhotogrammetryReconstructor:
         validation = colmap_res.get("validation_result", "UNKNOWN")
         diagnostics = colmap_res.get("diagnostic_messages", [])
 
-        # Clean dense PLY or sparse PLY if dense does not exist
+        # Save and orient sparse point cloud
         sparse_ply = colmap_res.get("sparse_ply")
         dense_ply = colmap_res.get("dense_ply")
         clean_dense_ply = None
+
+        if sparse_ply and Path(sparse_ply).exists():
+            try:
+                sp_pcd = o3d.io.read_point_cloud(str(sparse_ply))
+                sp_pcd = self.align_colmap_to_y_up(sp_pcd)
+                sp_dest = self.models_dir / "sparse_points.ply"
+                o3d.io.write_point_cloud(str(sp_dest), sp_pcd)
+                sparse_ply = str(sp_dest.resolve())
+            except Exception as e:
+                logger.warning(f"[RECONSTRUCTION] Sparse cloud orientation error: {e}")
 
         if dense_ply and Path(dense_ply).exists() and self._count_ply_points(dense_ply) > 0:
             clean_dense_ply = self._clean_point_cloud(dense_ply, "dense")
@@ -91,12 +101,22 @@ class PhotogrammetryReconstructor:
         # Compute camera centroid for normal orientation
         cam_positions = sfm_stats.get("camera_positions", [])
         cam_centroid = np.mean(np.array(cam_positions), axis=0).tolist() \
-            if len(cam_positions) > 0 else [0.0, 0.0, 5.0]
+            if len(cam_positions) > 0 else [0.0, 5.0, 0.0]
 
         # Count total valid points
-        total_points = self._count_ply_points(clean_dense_ply) or \
-                       self._count_ply_points(dense_ply) or \
-                       sfm_stats.get("sparse_points", 0)
+        total_points = (self._count_ply_points(clean_dense_ply) or
+                        self._count_ply_points(dense_ply) or
+                        sfm_stats.get("sparse_points", 0))
+
+        reg_imgs = sfm_stats.get("registered_images", 0)
+        tot_imgs = sfm_stats.get("total_images", 0)
+        reg_pct = sfm_stats.get("registration_pct", 0.0)
+        logger.info(f"[RECONSTRUCTION] SfM Registration Ratio: {reg_imgs}/{tot_imgs} ({reg_pct:.1f}%)")
+        if reg_pct < 80.0:
+            logger.warning(
+                f"[RECONSTRUCTION] Warning: Low image registration ({reg_pct:.1f}% < 80%). "
+                "Reconstruction may suffer from fragmentation or disconnected camera clusters."
+            )
 
         # Prepare result
         result = {
@@ -105,7 +125,7 @@ class PhotogrammetryReconstructor:
             "validation_result": validation,
             "diagnostic_messages": diagnostics,
             "sparse_ply": sparse_ply,
-            "dense_ply": dense_ply or sparse_ply,
+            "dense_ply": str((self.models_dir / "dense_points.ply").resolve()) if (self.models_dir / "dense_points.ply").exists() else (dense_ply or sparse_ply),
             "clean_dense_ply": clean_dense_ply or sparse_ply,
             "colmap_details": colmap_res,
             # SfM metrics exposed for quality_assessment
@@ -122,14 +142,32 @@ class PhotogrammetryReconstructor:
         return result
 
     # ------------------------------------------------------------------
+    # Axis Orientation Conversion: COLMAP to Three.js / Y-up
+    # ------------------------------------------------------------------
+    @staticmethod
+    def align_colmap_to_y_up(pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
+        """
+        Convert point cloud from COLMAP camera coordinate convention (X-right, Y-down, Z-forward)
+        to standard 3D Y-up convention (X-right, Y-up, Z-out) via a -90 degree rotation about X axis.
+        Rotation: [x, y, z] -> [x, -z, y]
+        """
+        R_colmap_to_y_up = np.array([
+            [1.0,  0.0,  0.0],
+            [0.0,  0.0, -1.0],
+            [0.0,  1.0,  0.0]
+        ], dtype=np.float64)
+        pcd.rotate(R_colmap_to_y_up, center=(0.0, 0.0, 0.0))
+        return pcd
+
+    # ------------------------------------------------------------------
     # Open3D Dense Point Cloud Cleaning
     # ------------------------------------------------------------------
     def _clean_point_cloud(self, ply_path: str, label: str = "dense") -> Optional[str]:
         """
-        Load a COLMAP-output point cloud and apply:
-          1. Statistical outlier removal.
-          2. Radius outlier removal (removes isolated noise points).
-          3. Normal estimation oriented toward camera centroid.
+        Load a point cloud and apply:
+          1. Axis conversion to Y-up convention.
+          2. Statistical outlier removal (removes isolated noise points).
+          3. Normal estimation oriented toward camera / sky.
 
         Returns path to the cleaned PLY, or None if cleaning failed.
         """
@@ -142,9 +180,16 @@ class PhotogrammetryReconstructor:
                 logger.warning(f"[CLEAN] Too few points ({n_orig}), skipping cleaning.")
                 return ply_path
 
+            # Step 1: Align COLMAP coordinates to Y-up convention
+            pcd = self.align_colmap_to_y_up(pcd)
+
+            # Save the uncleaned oriented cloud
+            raw_oriented_path = self.models_dir / f"{label}_points.ply"
+            o3d.io.write_point_cloud(str(raw_oriented_path), pcd)
+
             cfg = config.POINT_CLOUD_CLEANING
 
-            # Step 1: Statistical outlier removal
+            # Step 2: Statistical outlier removal
             pcd, ind = pcd.remove_statistical_outlier(
                 nb_neighbors=cfg["statistical_nb_neighbors"],
                 std_ratio=cfg["statistical_std_ratio"]
@@ -152,28 +197,22 @@ class PhotogrammetryReconstructor:
             logger.info(f"[CLEAN] After statistical filter: {len(pcd.points):,} points "
                         f"(removed {n_orig - len(pcd.points):,})")
 
-            # Step 2: Radius outlier removal — remove tiny isolated clusters
-            if len(pcd.points) > 20:
-                distances = pcd.compute_nearest_neighbor_distance()
-                avg_dist = float(np.mean(distances))
-                radius = cfg["radius_radius_factor"] * avg_dist
-                pcd, _ = pcd.remove_radius_outlier(
-                    nb_points=cfg["radius_nb_points"],
-                    radius=radius
-                )
-                logger.info(f"[CLEAN] After radius filter: {len(pcd.points):,} points")
-
             # Step 3: Normal estimation
             if len(pcd.points) > 3:
+                distances = pcd.compute_nearest_neighbor_distance()
+                avg_dist = float(np.mean(distances)) if len(distances) > 0 else 0.05
                 pcd.estimate_normals(
                     search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                        radius=avg_dist * 5.0 if 'avg_dist' in dir() else 0.1,
+                        radius=max(avg_dist * 4.0, 0.05),
                         max_nn=30
                     )
                 )
-                pcd.orient_normals_towards_camera_location(
-                    camera_location=np.array([0.0, 0.0, 10.0])
-                )
+                try:
+                    pcd.orient_normals_consistent_tangent_plane(k=15)
+                except Exception:
+                    pcd.orient_normals_towards_camera_location(
+                        camera_location=np.array([0.0, 10.0, 0.0])
+                    )
 
             clean_path = self.models_dir / f"{label}_points_clean.ply"
             o3d.io.write_point_cloud(str(clean_path), pcd)

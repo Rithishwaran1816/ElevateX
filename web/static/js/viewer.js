@@ -37,8 +37,9 @@ function initThreeViewer() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x060911);
 
-    // Camera
+    // Camera (Y-up convention)
     camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
+    camera.up.set(0, 1, 0);
     camera.position.set(0, 5, 10);
 
     // Renderer

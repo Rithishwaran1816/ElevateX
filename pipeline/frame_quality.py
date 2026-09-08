@@ -73,6 +73,44 @@ class FrameQualityAssessor:
             correlations.append(float(corr))
         return float(np.mean(correlations))
 
+    @staticmethod
+    def calculate_ssim(img1: np.ndarray, img2: np.ndarray) -> float:
+        """Compute Structural Similarity Index (SSIM) between two images."""
+        if len(img1.shape) == 3:
+            g1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+        else:
+            g1 = img1
+        if len(img2.shape) == 3:
+            g2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+        else:
+            g2 = img2
+
+        if g1.shape != g2.shape:
+            g2 = cv2.resize(g2, (g1.shape[1], g1.shape[0]))
+
+        C1 = (0.01 * 255) ** 2
+        C2 = (0.03 * 255) ** 2
+
+        g1 = g1.astype(np.float64)
+        g2 = g2.astype(np.float64)
+
+        kernel = cv2.getGaussianKernel(11, 1.5)
+        window = np.outer(kernel, kernel.transpose())
+
+        mu1 = cv2.filter2D(g1, -1, window)[5:-5, 5:-5]
+        mu2 = cv2.filter2D(g2, -1, window)[5:-5, 5:-5]
+
+        mu1_sq = mu1 ** 2
+        mu2_sq = mu2 ** 2
+        mu1_mu2 = mu1 * mu2
+
+        sigma1_sq = cv2.filter2D(g1 ** 2, -1, window)[5:-5, 5:-5] - mu1_sq
+        sigma2_sq = cv2.filter2D(g2 ** 2, -1, window)[5:-5, 5:-5] - mu2_sq
+        sigma12 = cv2.filter2D(g1 * g2, -1, window)[5:-5, 5:-5] - mu1_mu2
+
+        ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+        return float(np.mean(ssim_map))
+
     # ------------------------------------------------------------------
     # Backward-compatible wrapper (used by processing_service.py)
     # ------------------------------------------------------------------
@@ -83,7 +121,7 @@ class FrameQualityAssessor:
                           duplicate_threshold: float = config.FRAME_QUALITY["duplicate_hist_threshold"]
                           ) -> Dict[str, Any]:
         """
-        Entry point called by the pipeline. Internally calls the new intelligent
+        Entry point called by the pipeline. Internally calls the intelligent
         keyframe selector and returns a backward-compatible report dict.
         """
         return self.select_keyframes()
@@ -97,7 +135,8 @@ class FrameQualityAssessor:
 
         Algorithm:
         1. Load all candidate frames from input_dir, compute quality scores.
-        2. Hard-reject frames below quality floors (dark, excessively blurry).
+        2. Hard-reject frames below quality floors (dark, excessively blurry)
+           and near-duplicate low-baseline frames.
         3. Adaptively set blur threshold from the frame population.
         4. Divide the timeline into N equal segments (N = target_keyframes).
         5. In each segment, pick the highest-scoring frame.
@@ -126,8 +165,10 @@ class FrameQualityAssessor:
         blur_floor = cfg["blur_threshold"]
         min_brightness = cfg["min_brightness"]
         max_brightness = cfg["max_brightness"]
-        min_hist_dist = cfg["min_histogram_distance"]
-        min_spacing = cfg.get("min_frame_spacing", 3)
+        min_hist_dist = cfg.get("min_histogram_distance", 0.15)
+        dup_hist_thresh = cfg.get("duplicate_hist_threshold", 0.94)
+        dup_ssim_thresh = cfg.get("duplicate_ssim_threshold", 0.90)
+        min_motion_thresh = cfg.get("min_motion_magnitude", 1.5)
 
         # ---- Step 1: Score all candidates -----------------------------------
         scored: List[Dict[str, Any]] = []
@@ -143,7 +184,6 @@ class FrameQualityAssessor:
             sharpness = self.calculate_sharpness(small)
             brightness = self.calculate_brightness(small)
 
-            # Compute optical flow vs. previous frame
             scored.append({
                 "path": fp,
                 "index": i,
@@ -164,8 +204,7 @@ class FrameQualityAssessor:
         logger.info(f"[QUALITY] Effective blur threshold: {effective_blur_threshold:.1f} "
                     f"(population 25th-pct: {adaptive_threshold:.1f})")
 
-        # ---- Step 3: Hard reject -------------------------------------------
-        # Compute motion magnitude between adjacent scored frames
+        # ---- Step 3: Motion magnitude calculation ---------------------------
         prev_gray = None
         for item in scored:
             gray = item["gray_small"]
@@ -183,24 +222,23 @@ class FrameQualityAssessor:
         max_sharpness = max(sharpness_vals) + 1e-6
         max_motion = max(s.get("motion", 0) for s in scored) + 1e-6
         for item in scored:
-            # Normalised sharpness [0..1]
             norm_sharp = item["sharpness"] / max_sharpness
-            # Penalise extreme motion (motion blur) and near-zero motion (static)
             motion = item["motion"]
             motion_score = 1.0 - abs(motion - cfg["min_motion_magnitude"]) / (
                 cfg["max_motion_magnitude"] + 1e-6
             )
             motion_score = max(0.0, min(1.0, motion_score))
-            # Brightness acceptability
             bri = item["brightness"]
             bri_ok = 1.0 if min_brightness <= bri <= max_brightness else 0.2
-            # Composite
             item["quality_score"] = (0.6 * norm_sharp + 0.3 * motion_score + 0.1 * bri_ok)
 
-        # ---- Step 4: Hard reject blurry / dark / overexposed frames --------
+        # ---- Step 4: Hard reject blurry / dark / overexposed AND low-baseline duplicates
         eligible = []
         rejected_blur = 0
         rejected_exposure = 0
+        rejected_duplicates = 0
+
+        prev_accepted_item = None
         for item in scored:
             if item["sharpness"] < effective_blur_threshold:
                 rejected_blur += 1
@@ -209,10 +247,34 @@ class FrameQualityAssessor:
             if bri < min_brightness or bri > max_brightness:
                 rejected_exposure += 1
                 continue
+
+            # Duplicate / low-baseline filtering against previous accepted frame
+            if prev_accepted_item is not None:
+                h_corr = self.calculate_similarity(item["small"], prev_accepted_item["small"])
+                h1 = self._compact_histogram(item["small"])
+                h2 = self._compact_histogram(prev_accepted_item["small"])
+                h_dist = float(np.sum(np.abs(h1 - h2)))
+                mot = item.get("motion", 5.0)
+
+                # Near-duplicate: stationary hovering with near-zero motion (<0.4px) AND high correlation (>0.99)
+                is_duplicate = (
+                    (h_corr >= dup_hist_thresh and mot < 0.5) or
+                    (h_dist < min_hist_dist and mot < 0.4)
+                )
+
+                if is_duplicate:
+                    rejected_duplicates += 1
+                    # If this duplicate frame has higher quality than previous, replace it
+                    if item["quality_score"] > prev_accepted_item["quality_score"] and eligible:
+                        eligible[-1] = item
+                        prev_accepted_item = item
+                    continue
+
             eligible.append(item)
+            prev_accepted_item = item
 
         logger.info(f"[QUALITY] After hard-reject: {len(eligible)}/{total_candidates} eligible "
-                    f"(blur={rejected_blur}, exposure={rejected_exposure})")
+                    f"(blur={rejected_blur}, exposure={rejected_exposure}, duplicate_candidates={rejected_duplicates})")
 
         # Fallback: if too few eligible, relax threshold and take top-N by sharpness
         if len(eligible) < min_kf:
@@ -222,8 +284,6 @@ class FrameQualityAssessor:
             eligible = scored_by_sharp[:max(min_kf, len(scored_by_sharp))]
 
         # ---- Step 5: Segment-based selection --------------------------------
-        # Divide eligible frames across N=target temporal segments and pick
-        # the highest-quality frame in each segment.
         n_eligible = len(eligible)
         n_segments = min(target, n_eligible)
         segment_size = n_eligible / n_segments
@@ -240,29 +300,27 @@ class FrameQualityAssessor:
 
         logger.info(f"[QUALITY] Segment-based selection: {len(segment_picks)} keyframes.")
 
-        # ---- Step 6: Post-pass deduplication --------------------------------
-        # Remove picks that are nearly identical to their neighbour
+        # ---- Step 6: Post-pass deduplication among segment picks -----------
         deduplicated: List[Dict[str, Any]] = []
-        prev_hist = None
         for item in segment_picks:
-            # Compute a compact color histogram for this frame
-            hist = self._compact_histogram(item["small"])
-            if prev_hist is not None:
-                dist = float(np.sum(np.abs(hist - prev_hist)))
-                if dist < min_hist_dist:
-                    # Near-duplicate: keep the better-quality one
-                    if deduplicated and item["quality_score"] > deduplicated[-1]["quality_score"]:
-                        deduplicated[-1] = item
-                        prev_hist = hist
-                    continue
-            deduplicated.append(item)
-            prev_hist = hist
+            if deduplicated:
+                prev_pick = deduplicated[-1]
+                h_corr = self.calculate_similarity(item["small"], prev_pick["small"])
+                mot = item.get("motion", 5.0)
 
-        logger.info(f"[QUALITY] After deduplication: {len(deduplicated)} keyframes.")
+                # Segment picks are distinct temporal segments; only reject if drone hovered motionless
+                if h_corr >= dup_hist_thresh and mot < 0.5:
+                    rejected_duplicates += 1
+                    if item["quality_score"] > prev_pick["quality_score"]:
+                        deduplicated[-1] = item
+                    continue
+
+            deduplicated.append(item)
+
+        logger.info(f"[QUALITY] After post-pass deduplication: {len(deduplicated)} keyframes (total duplicates rejected: {rejected_duplicates}).")
 
         # ---- Step 7: Enforce max keyframe cap --------------------------------
         if len(deduplicated) > max_kf:
-            # Keep evenly spaced frames from deduplicated list
             indices = np.round(np.linspace(0, len(deduplicated) - 1, max_kf)).astype(int)
             deduplicated = [deduplicated[i] for i in indices]
             logger.info(f"[QUALITY] Capped to {max_kf} keyframes.")
@@ -285,7 +343,7 @@ class FrameQualityAssessor:
             "accepted_frames": len(accepted_files),
             "rejected_blur": rejected_blur,
             "rejected_exposure": rejected_exposure,
-            "rejected_duplicates": len(segment_picks) - len(deduplicated),
+            "rejected_duplicates": rejected_duplicates,
             "average_sharpness": round(avg_sharpness, 2),
             "average_motion_magnitude": round(avg_motion, 2),
             "effective_blur_threshold": round(effective_blur_threshold, 2),
@@ -300,7 +358,8 @@ class FrameQualityAssessor:
             json.dump(report, f, indent=2)
 
         logger.info(f"[QUALITY] Final selection: {len(accepted_files)} keyframes. "
-                    f"Avg sharpness: {avg_sharpness:.1f}, Avg motion: {avg_motion:.2f}")
+                    f"Avg sharpness: {avg_sharpness:.1f}, Avg motion: {avg_motion:.2f}, "
+                    f"Rejected duplicates: {rejected_duplicates}")
         return report
 
     # ------------------------------------------------------------------

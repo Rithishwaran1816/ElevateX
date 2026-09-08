@@ -31,6 +31,7 @@ ElevateX seamlessly auto-detects **COLMAP** when available, and provides a built
                      └── CLAHE Adaptive Illumination Recovery
                                        │
                                        ▼
+                                       
                        STAGE 3: 3D PHOTOGRAMMETRIC RECONSTRUCTION
                      ├── SIFT / ORB Multi-Scale Feature Extraction
                      ├── FLANN / KD-Tree Ratio Matching (Lowe's Test)

@@ -43,17 +43,17 @@ class MeshGenerator:
         avg_dist = float(np.mean(distances)) if len(distances) > 0 else 0.05
         avg_dist = max(avg_dist, 1e-4)
 
-        # Ensure normals are computed and consistently oriented with Open3D
+        # Ensure normals are computed and consistently oriented towards Y-up
         if not pcd.has_normals() or np.asarray(pcd.normals).shape[0] == 0:
             try:
-                search_radius = max(avg_dist * 3.0, 0.05)
+                search_radius = max(avg_dist * 4.0, 0.05)
                 pcd.estimate_normals(
                     search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=search_radius, max_nn=35)
                 )
                 try:
                     pcd.orient_normals_consistent_tangent_plane(k=15)
                 except Exception:
-                    pcd.orient_normals_towards_camera_location(camera_location=np.array([0.0, 0.0, 5.0]))
+                    pcd.orient_normals_towards_camera_location(camera_location=np.array([0.0, 10.0, 0.0]))
             except Exception:
                 pass
 

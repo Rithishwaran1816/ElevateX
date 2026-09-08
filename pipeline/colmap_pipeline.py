@@ -120,7 +120,7 @@ class ColmapPipeline:
                 "diagnostic_messages": ["COLMAP is not installed. Using built-in SfM engine."]
             }
 
-        # Wipe stale database from prior runs so features are re-extracted
+        # Wipe stale database and sparse output from prior runs so features are re-extracted
         if self.database_path.exists():
             try:
                 self.database_path.unlink()
@@ -128,20 +128,32 @@ class ColmapPipeline:
             except OSError:
                 pass
 
+        if self.sparse_dir.exists():
+            import shutil
+            for sub in self.sparse_dir.iterdir():
+                try:
+                    if sub.is_dir():
+                        shutil.rmtree(sub)
+                    else:
+                        sub.unlink()
+                except OSError:
+                    pass
+            logger.info("[COLMAP] Cleaned sparse output directory.")
+
         steps_log = []
 
         # ----------------------------------------------------------------
         # Step 1 — Feature Extraction
         # ----------------------------------------------------------------
         params = config.COLMAP_PARAMS
-        logger.info("[COLMAP] Step 1/6: Feature Extraction...")
+        logger.info("[COLMAP] Step 1/6: Feature Extraction (enforcing single_camera=1 shared intrinsics)...")
 
         extract_args = [
             "feature_extractor",
             "--database_path", str(self.database_path),
             "--image_path", str(self.images_dir),
-            # CRITICAL: Single shared camera model
-            "--ImageReader.camera_model", params["camera_model"],
+            # CRITICAL: Force single shared camera model across all drone frames
+            "--ImageReader.camera_model", params.get("camera_model", "OPENCV"),
             "--ImageReader.single_camera", "1",
             # SIFT extraction quality
             "--SiftExtraction.max_num_features", str(params["sift_max_features"]),
@@ -254,8 +266,21 @@ class ColmapPipeline:
         sfm_stats = self._parse_sfm_statistics(text_model_dir)
         validation = self._validate_sparse_reconstruction(sfm_stats)
 
-        logger.info(f"[COLMAP] SfM Stats: {sfm_stats}")
-        logger.info(f"[COLMAP] Validation: {validation['result']} — {validation['messages']}")
+        reg_str = f"{sfm_stats['registered_images']}/{sfm_stats['total_images']} ({sfm_stats['registration_pct']:.1f}%)"
+        logger.info("=" * 65)
+        logger.info(f"[COLMAP] SFM REGISTRATION RATIO : {reg_str}")
+        logger.info(f"[COLMAP] Sparse 3D Points       : {sfm_stats['sparse_points']:,}")
+        logger.info(f"[COLMAP] Mean Reprojection Error: {sfm_stats['mean_reprojection_error']:.3f} px")
+        logger.info(f"[COLMAP] Mean Track Length      : {sfm_stats['mean_track_length']:.2f}")
+        if sfm_stats["registration_pct"] < 80.0:
+            logger.warning(
+                f"[COLMAP] WARNING: Low registration ratio ({sfm_stats['registration_pct']:.1f}% < 80.0%). "
+                "COLMAP may have fragmented the sequence into disconnected sub-reconstructions!"
+            )
+        logger.info(f"[COLMAP] Validation Result      : {validation['result']}")
+        for msg in validation["messages"]:
+            logger.info(f"[COLMAP]   • {msg}")
+        logger.info("=" * 65)
 
         dense_ply = None
 
@@ -271,20 +296,20 @@ class ColmapPipeline:
                 "--input_path", str(model_0_dir),
                 "--output_path", str(self.dense_dir),
                 "--output_type", "COLMAP",
-                "--max_image_size", "960",
-            ], timeout=600)
+                "--max_image_size", "1280",
+            ], timeout=1200)
             steps_log.append({"step": "image_undistorter", "result": undistort_res})
 
             pms_res = self.run_command([
                 "patch_match_stereo",
                 "--workspace_path", str(self.dense_dir),
                 "--workspace_format", "COLMAP",
-                "--PatchMatchStereo.max_image_size", "960",
-                "--PatchMatchStereo.window_radius", "3",
-                "--PatchMatchStereo.num_iterations", "2",
+                "--PatchMatchStereo.max_image_size", "1280",
+                "--PatchMatchStereo.window_radius", "4",
+                "--PatchMatchStereo.num_iterations", "5",
                 "--PatchMatchStereo.geom_consistency", "0",
                 "--PatchMatchStereo.gpu_index", "0",
-            ], timeout=600)
+            ], timeout=1800)
             steps_log.append({"step": "patch_match_stereo", "result": pms_res})
 
             dense_ply = self.dense_dir / "fused.ply"
@@ -295,7 +320,9 @@ class ColmapPipeline:
                 "--input_type", "photometric",
                 "--output_type", "PLY",
                 "--output_path", str(dense_ply),
-            ], timeout=600)
+                "--StereoFusion.min_num_pixels", "3",
+                "--StereoFusion.max_reproj_error", "2.0",
+            ], timeout=1200)
             steps_log.append({"step": "stereo_fusion", "result": fusion_res})
 
             if not dense_ply.exists():
