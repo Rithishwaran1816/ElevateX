@@ -1,0 +1,11 @@
+{
+  "status": "UNAVAILABLE",
+  "georeferencing_status": "LOCAL_COORDINATE_SYSTEM",
+  "message": "Georeferencing data unavailable.",
+  "reason": "GPS coordinates or synchronized flight metadata were not provided.",
+  "result_coordinate_space": "Model reconstructed in local coordinate space (Arbitrary metric scale).",
+  "reference_datum": "None (Local Euclidean)",
+  "utm_zone": null,
+  "anchor_point": null,
+  "spatial_bounds_meters": null
+}

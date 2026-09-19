@@ -5,9 +5,9 @@
   "rejected_blur": 43,
   "rejected_exposure": 0,
   "rejected_duplicates": 0,
-  "average_sharpness": 2692.41,
-  "average_motion_magnitude": 6.77,
-  "effective_blur_threshold": 1860.4,
+  "average_sharpness": 2948.92,
+  "average_motion_magnitude": 21.07,
+  "effective_blur_threshold": 2157.07,
   "selected_frames": [
     "C:\\Users\\rithishwaran\\OneDrive\\Desktop\\elevate x\\data\\output\\selected_frames\\frame_00000.jpg",
     "C:\\Users\\rithishwaran\\OneDrive\\Desktop\\elevate x\\data\\output\\selected_frames\\frame_00001.jpg",
@@ -170,7 +170,7 @@
     "C:\\Users\\rithishwaran\\OneDrive\\Desktop\\elevate x\\data\\output\\selected_frames\\frame_00158.jpg",
     "C:\\Users\\rithishwaran\\OneDrive\\Desktop\\elevate x\\data\\output\\selected_frames\\frame_00159.jpg"
   ],
-  "blur_threshold_used": 1860.4024729194339,
+  "blur_threshold_used": 2157.069696189373,
   "exposure_bounds": [
     30.0,
     240.0

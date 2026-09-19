@@ -15,7 +15,7 @@ to help COLMAP feature matching and camera registration.
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import config
 import logging
 
@@ -94,7 +94,7 @@ class ImagePreprocessor:
             return image
 
         try:
-            results = yolo_model(image, verbose=False, conf=conf_threshold)
+            results = yolo_model(image, verbose=False, conf=conf_threshold, imgsz=480)
             out_img = image.copy()
             for r in results:
                 boxes = r.boxes
@@ -155,41 +155,54 @@ class ImagePreprocessor:
             except Exception as e:
                 logger.warning(f"[PREPROC] Could not initialize YOLO for dynamic masking: {e}")
 
-        for f in image_files:
-            img = cv2.imread(str(f))
-            if img is None:
-                logger.warning(f"[PREPROC] Skipping unreadable file: {f}")
-                continue
+        from concurrent.futures import ThreadPoolExecutor
+        import os
 
-            processed = img.copy()
+        def _process_single_image(f: Path) -> Optional[str]:
+            try:
+                img = cv2.imread(str(f))
+                if img is None:
+                    return None
 
-            # 1. Dynamic object masking (vehicles, people)
-            if mask_dynamic_objects and yolo_model is not None:
-                processed = self.apply_dynamic_object_mask(processed, yolo_model=yolo_model)
+                processed = img.copy()
 
-            # 2. CLAHE illumination normalisation
-            if enable_clahe:
-                processed = self.apply_clahe(
-                    processed,
-                    clip_limit=config.IMAGE_PREPROCESSING["clahe_clip_limit"],
-                    grid_size=config.IMAGE_PREPROCESSING["clahe_grid_size"]
-                )
+                # 1. Dynamic object masking (vehicles, people)
+                if mask_dynamic_objects and yolo_model is not None:
+                    processed = self.apply_dynamic_object_mask(processed, yolo_model=yolo_model)
 
-            # 3. Edge-preserving denoising
-            if enable_denoising:
-                processed = self.apply_subtle_denoising(processed)
+                # 2. CLAHE illumination normalisation
+                if enable_clahe:
+                    processed = self.apply_clahe(
+                        processed,
+                        clip_limit=config.IMAGE_PREPROCESSING["clahe_clip_limit"],
+                        grid_size=config.IMAGE_PREPROCESSING["clahe_grid_size"]
+                    )
 
-            # 4. Soft sky suppression
-            if enable_sky_mask:
-                processed = self.apply_sky_mask(processed,
-                                                sky_upper_fraction=sky_fraction,
-                                                strength=sky_strength)
+                # 3. Edge-preserving denoising
+                if enable_denoising:
+                    processed = self.apply_subtle_denoising(processed)
 
-            out_file = self.output_dir / f.name
-            cv2.imwrite(str(out_file), processed, [cv2.IMWRITE_JPEG_QUALITY, 98])
-            processed_files.append(str(out_file.resolve()))
+                # 4. Soft sky suppression
+                if enable_sky_mask:
+                    processed = self.apply_sky_mask(processed,
+                                                    sky_upper_fraction=sky_fraction,
+                                                    strength=sky_strength)
 
-        logger.info(f"[PREPROC] Preprocessed {len(processed_files)} images → {self.output_dir}")
+                out_file = self.output_dir / f.name
+                cv2.imwrite(str(out_file), processed, [cv2.IMWRITE_JPEG_QUALITY, 98])
+                return str(out_file.resolve())
+            except Exception as ex:
+                logger.warning(f"[PREPROC] Error processing {f}: {ex}")
+                return None
+
+        # Execute across CPU threads in parallel for maximum throughput
+        max_workers = min(12, (os.cpu_count() or 4) * 2)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(_process_single_image, image_files))
+
+        processed_files = [r for r in results if r is not None]
+
+        logger.info(f"[PREPROC] Preprocessed {len(processed_files)} images in parallel → {self.output_dir}")
         return {
             "preprocessed_count": len(processed_files),
             "output_directory": str(self.output_dir.resolve()),

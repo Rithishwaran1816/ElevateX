@@ -130,6 +130,37 @@ def process_status():
     """Poll pipeline execution progress and stage states."""
     return jsonify(processor_service.get_status())
 
+@app.route("/api/models/info", methods=["GET"])
+def models_info():
+    """Check availability of reconstructed 3D models and existing quality reports."""
+    glb_path = config.MODELS_DIR / "model.glb"
+    ply_path = config.MODELS_DIR / "textured_model.ply"
+    mesh_path = config.MODELS_DIR / "reconstructed_mesh.ply"
+    dense_path = config.MODELS_DIR / "dense_points_web.ply"
+    if not dense_path.exists():
+        dense_path = config.MODELS_DIR / "dense_points_clean.ply"
+    sparse_path = config.MODELS_DIR / "sparse_points.ply"
+
+    has_model = glb_path.exists() or ply_path.exists() or mesh_path.exists() or dense_path.exists()
+
+    q_report = None
+    q_file = config.REPORTS_DIR / "quality_report.json"
+    if q_file.exists():
+        try:
+            with open(q_file, "r") as f:
+                q_report = json.load(f)
+        except Exception:
+            pass
+
+    return jsonify({
+        "has_model": has_model,
+        "glb_available": glb_path.exists(),
+        "ply_available": ply_path.exists(),
+        "dense_available": dense_path.exists(),
+        "sparse_available": sparse_path.exists(),
+        "quality_report": q_report
+    })
+
 @app.route("/api/models/<path:filename>")
 def serve_model(filename):
     """Serve generated 3D models (GLB, PLY, OBJ)."""

@@ -23,15 +23,26 @@ document.addEventListener("DOMContentLoaded", () => {
     initToolbarControls();
     initTabHandlers();
     checkSystemStatus();
+    // Check if models exist and auto-load them into the 3D viewport
+    checkExistingModel();
+    // Check if background pipeline is already running or completed
+    pollPipelineStatus();
 });
 
+// FPS & Performance Tracking
+let lastFrameTime = performance.now();
+let frameCount = 0;
+let currentFps = 60;
+let fpsDisplayEl = null;
+
 /* -----------------------------------------------------------------
- * 1. Three.js Viewport Initialization
+ * 1. Three.js Viewport Initialization (High-Performance WebGL Engine)
  * ----------------------------------------------------------------- */
 function initThreeViewer() {
     const container = document.getElementById("canvas-container");
     const width = container.clientWidth;
     const height = container.clientHeight;
+    fpsDisplayEl = document.getElementById("render-fps-badge");
 
     // Scene
     scene = new THREE.Scene();
@@ -42,27 +53,42 @@ function initThreeViewer() {
     camera.up.set(0, 1, 0);
     camera.position.set(0, 5, 10);
 
-    // Renderer
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // High-Performance WebGL Renderer (optimized pixel ratio, disabled redundant shadow passes)
+    renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        powerPreference: "high-performance",
+        precision: "highp",
+        stencil: false,
+        depth: true,
+        logarithmicDepthBuffer: false
+    });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.shadowMap.enabled = true;
+    // Cap pixel ratio to max 1.5 to prevent high-DPI GPU slowdowns on 2K/4K/Retina displays
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.shadowMap.enabled = false; // Photogrammetry uses baked vertex/texture colors; disable heavy shadow passes
+    if (renderer.outputColorSpace !== undefined) {
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+    }
     container.appendChild(renderer.domElement);
 
     // Controls
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
+    controls.dampingFactor = 0.08;
+    controls.rotateSpeed = 0.8;
+    controls.zoomSpeed = 1.0;
+    controls.panSpeed = 0.8;
 
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    // Lighting (balanced directional + ambient for optimal contrast)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
     scene.add(ambientLight);
 
-    const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.9);
+    const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.95);
     dirLight1.position.set(10, 20, 10);
     scene.add(dirLight1);
 
-    const dirLight2 = new THREE.DirectionalLight(0x90b0ff, 0.4);
+    const dirLight2 = new THREE.DirectionalLight(0x90b0ff, 0.45);
     dirLight2.position.set(-10, -10, -10);
     scene.add(dirLight2);
 
@@ -73,7 +99,7 @@ function initThreeViewer() {
 
     // Raycaster for Measurement
     raycaster = new THREE.Raycaster();
-    raycaster.params.Points.threshold = 0.1;
+    raycaster.params.Points.threshold = 0.08;
     mouse = new THREE.Vector2();
 
     // Window Resize
@@ -88,6 +114,20 @@ function initThreeViewer() {
 
 function animate() {
     requestAnimationFrame(animate);
+
+    // FPS Meter
+    const now = performance.now();
+    frameCount++;
+    if (now - lastFrameTime >= 500) {
+        currentFps = Math.round((frameCount * 1000) / (now - lastFrameTime));
+        if (fpsDisplayEl) {
+            fpsDisplayEl.textContent = `${currentFps} FPS (Turbo)`;
+            fpsDisplayEl.className = currentFps >= 50 ? "badge badge-running" : (currentFps >= 30 ? "badge badge-warning" : "badge badge-danger");
+        }
+        frameCount = 0;
+        lastFrameTime = now;
+    }
+
     controls.update();
     renderer.render(scene, camera);
 }
@@ -101,8 +141,70 @@ function onWindowResize() {
 }
 
 /* -----------------------------------------------------------------
- * 2. Model Loading (GLB / PLY / OBJ)
+ * 2. Model Loading (GLB / PLY / OBJ) - High-Performance Loading
  * ----------------------------------------------------------------- */
+async function checkExistingModel() {
+    try {
+        const res = await fetch("/api/models/info");
+        if (res.ok) {
+            const info = await res.json();
+            if (info.has_model) {
+                console.log("[ELEVATEX] Found existing reconstructed 3D model. Auto-loading...");
+                const modeSelect = document.getElementById("select-render-mode");
+                const mode = modeSelect ? modeSelect.value : "textured";
+                load3DModel(mode);
+
+                if (info.quality_report) {
+                    const qReport = info.quality_report;
+                    const rm = qReport.reconstruction_metrics || {};
+                    if (document.getElementById("stat-vertices")) {
+                        document.getElementById("stat-vertices").textContent = (rm.mesh_vertices || 0).toLocaleString();
+                        document.getElementById("stat-faces").textContent = (rm.mesh_faces || 0).toLocaleString();
+                        document.getElementById("stat-dense-pts").textContent = (rm.dense_points || 0).toLocaleString();
+                        document.getElementById("stat-georef").textContent = qReport.georeferencing?.status || "ALIGNED";
+                        document.getElementById("stat-time").textContent = `${qReport.processing_time_seconds || 0}s`;
+                    }
+                    if (document.getElementById("quality-json-viewer")) {
+                        document.getElementById("quality-json-viewer").textContent = JSON.stringify(qReport, null, 2);
+                    }
+                    fetchGeorefReport();
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("Could not check existing model status:", e);
+    }
+}
+
+function showLoadingIndicator(text = "Loading 3D Model...") {
+    let loader = document.getElementById("model-loading-indicator");
+    if (!loader) {
+        loader = document.createElement("div");
+        loader.id = "model-loading-indicator";
+        loader.style.position = "absolute";
+        loader.style.bottom = "20px";
+        loader.style.left = "20px";
+        loader.style.padding = "8px 16px";
+        loader.style.background = "rgba(17, 24, 39, 0.9)";
+        loader.style.border = "1px solid rgba(59, 130, 246, 0.5)";
+        loader.style.borderRadius = "8px";
+        loader.style.color = "#38bdf8";
+        loader.style.fontSize = "0.85rem";
+        loader.style.fontWeight = "600";
+        loader.style.zIndex = "100";
+        loader.style.backdropFilter = "blur(8px)";
+        loader.style.boxShadow = "0 4px 12px rgba(0,0,0,0.5)";
+        document.getElementById("canvas-container").appendChild(loader);
+    }
+    loader.textContent = text;
+    loader.style.display = "block";
+}
+
+function hideLoadingIndicator() {
+    const loader = document.getElementById("model-loading-indicator");
+    if (loader) loader.style.display = "none";
+}
+
 function load3DModel(type = "textured") {
     const placeholder = document.getElementById("viewer-placeholder");
     if (placeholder) placeholder.classList.add("hidden");
@@ -115,6 +217,7 @@ function load3DModel(type = "textured") {
     clearMeasurement();
 
     const timestamp = new Date().getTime();
+    showLoadingIndicator(`Streaming 3D ${type.replace('_', ' ').toUpperCase()}...`);
 
     if (type === "textured" || type === "wireframe") {
         // Try GLB first
@@ -123,22 +226,38 @@ function load3DModel(type = "textured") {
             `/api/models/model.glb?t=${timestamp}`,
             (gltf) => {
                 currentModelObject = gltf.scene;
-                if (type === "wireframe") {
-                    currentModelObject.traverse((child) => {
-                        if (child.isMesh) child.material.wireframe = true;
-                    });
-                }
+                currentModelObject.traverse((child) => {
+                    if (child.isMesh) {
+                        if (child.geometry) {
+                            child.geometry.computeVertexNormals();
+                            child.geometry.computeBoundingSphere();
+                        }
+                        if (child.material) {
+                            child.material.side = THREE.DoubleSide;
+                            if (type === "wireframe") {
+                                child.material.wireframe = true;
+                            }
+                        }
+                    }
+                });
                 fitObjectToView(currentModelObject);
                 scene.add(currentModelObject);
+                hideLoadingIndicator();
             },
-            undefined,
+            (xhr) => {
+                if (xhr.lengthComputable) {
+                    const pct = Math.round((xhr.loaded / xhr.total) * 100);
+                    showLoadingIndicator(`Loading 3D Mesh (${pct}%)...`);
+                }
+            },
             (err) => {
-                // Fallback to PLY mesh
+                console.warn("[GLTF] Fallback to textured PLY:", err);
                 loadPlyMesh(`/api/models/textured_model.ply?t=${timestamp}`, type === "wireframe");
             }
         );
     } else if (type === "dense_pcd") {
-        loadPlyPointCloud(`/api/models/dense_points_clean.ply?t=${timestamp}`);
+        // Load fast web-optimized point cloud first, fallback to dense_points_clean.ply
+        loadPlyPointCloud(`/api/models/dense_points_web.ply?t=${timestamp}`, `/api/models/dense_points_clean.ply?t=${timestamp}`);
     } else if (type === "sparse_pcd") {
         loadPlyPointCloud(`/api/models/sparse_points.ply?t=${timestamp}`);
     }
@@ -146,13 +265,17 @@ function load3DModel(type = "textured") {
 
 function loadPlyMesh(url, wireframe = false) {
     const plyLoader = new THREE.PLYLoader();
+    showLoadingIndicator("Loading PLY Mesh...");
     plyLoader.load(url, (geometry) => {
         geometry.computeVertexNormals();
+        geometry.computeBoundingSphere();
+        geometry.computeBoundingBox();
+
         let material;
         if (geometry.hasAttribute("color")) {
             material = new THREE.MeshStandardMaterial({
                 vertexColors: true,
-                roughness: 0.6,
+                roughness: 0.5,
                 metalness: 0.1,
                 wireframe: wireframe,
                 side: THREE.DoubleSide
@@ -160,7 +283,7 @@ function loadPlyMesh(url, wireframe = false) {
         } else {
             material = new THREE.MeshStandardMaterial({
                 color: 0x94a3b8,
-                roughness: 0.6,
+                roughness: 0.5,
                 wireframe: wireframe,
                 side: THREE.DoubleSide
             });
@@ -169,24 +292,46 @@ function loadPlyMesh(url, wireframe = false) {
         currentModelObject = mesh;
         fitObjectToView(currentModelObject);
         scene.add(currentModelObject);
+        hideLoadingIndicator();
+    }, undefined, (err) => {
+        console.error("Failed to load PLY mesh:", err);
+        hideLoadingIndicator();
     });
 }
 
-function loadPlyPointCloud(url) {
+function loadPlyPointCloud(url, fallbackUrl = null) {
     const plyLoader = new THREE.PLYLoader();
     const pointSize = parseFloat(document.getElementById("slider-point-size").value) * 0.04;
+    showLoadingIndicator("Loading 3D Point Cloud...");
 
     plyLoader.load(url, (geometry) => {
+        geometry.computeBoundingSphere();
+        geometry.computeBoundingBox();
         const hasColors = geometry.hasAttribute("color");
         pointMaterial = new THREE.PointsMaterial({
             size: pointSize,
             vertexColors: hasColors,
-            color: hasColors ? 0xffffff : 0x38bdf8
+            color: hasColors ? 0xffffff : 0x38bdf8,
+            sizeAttenuation: true
         });
         const points = new THREE.Points(geometry, pointMaterial);
         currentModelObject = points;
         fitObjectToView(currentModelObject);
         scene.add(currentModelObject);
+        hideLoadingIndicator();
+    }, (xhr) => {
+        if (xhr.lengthComputable) {
+            const pct = Math.round((xhr.loaded / xhr.total) * 100);
+            showLoadingIndicator(`Loading Point Cloud (${pct}%)...`);
+        }
+    }, (err) => {
+        if (fallbackUrl) {
+            console.warn(`Falling back to ${fallbackUrl}...`);
+            loadPlyPointCloud(fallbackUrl, null);
+        } else {
+            console.error("Failed to load Point Cloud:", err);
+            hideLoadingIndicator();
+        }
     });
 }
 
@@ -496,21 +641,26 @@ function initUploadHandlers() {
         btnStart.disabled = true;
         btnStart.innerHTML = `<span class="badge badge-running">RUNNING</span> Processing 3D Pipeline...`;
 
-        const res = await fetch("/api/process/start", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                video_path: uploadedVideoPath,
-                telemetry_path: uploadedTelemetryPath
-            })
-        });
-        const data = await res.json();
-        if (data.success) {
+        try {
+            const res = await fetch("/api/process/start", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    video_path: uploadedVideoPath,
+                    telemetry_path: uploadedTelemetryPath
+                })
+            });
+            const data = await res.json();
+            if (data.success || data.error === "Reconstruction already in progress") {
+                startStatusPolling();
+            } else {
+                alert(data.error || "Failed to start pipeline");
+                btnStart.disabled = false;
+                btnStart.textContent = "Execute 3D Reconstruction";
+            }
+        } catch (err) {
+            console.error("Start pipeline error", err);
             startStatusPolling();
-        } else {
-            alert(data.error || "Failed to start pipeline");
-            btnStart.disabled = false;
-            btnStart.textContent = "Execute 3D Reconstruction";
         }
     });
 }
@@ -529,6 +679,17 @@ async function pollPipelineStatus() {
         const badge = document.getElementById("overall-status-badge");
         badge.textContent = statusData.state;
         badge.className = `badge badge-${statusData.state.toLowerCase()}`;
+
+        const btnStart = document.getElementById("btn-start-process");
+        if (statusData.state === "RUNNING") {
+            if (btnStart) {
+                btnStart.disabled = true;
+                btnStart.innerHTML = `<span class="badge badge-running">RUNNING</span> Processing 3D Pipeline...`;
+            }
+            if (!pollingInterval) {
+                pollingInterval = setInterval(pollPipelineStatus, 1000);
+            }
+        }
 
         // Update each stage item
         const stageMap = {

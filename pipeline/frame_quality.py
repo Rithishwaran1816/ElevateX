@@ -170,7 +170,7 @@ class FrameQualityAssessor:
         dup_ssim_thresh = cfg.get("duplicate_ssim_threshold", 0.90)
         min_motion_thresh = cfg.get("min_motion_magnitude", 1.5)
 
-        # ---- Step 1: Score all candidates -----------------------------------
+        # ---- Step 1: Score all candidates (Optimized fast downsampling) -----
         scored: List[Dict[str, Any]] = []
         for i, fp in enumerate(frame_files):
             img = cv2.imread(str(fp))
@@ -178,8 +178,10 @@ class FrameQualityAssessor:
                 continue
 
             # Compute metrics on downsampled version for speed
-            small = cv2.resize(img, (640, 360))
+            small = cv2.resize(img, (480, 270))
             gray_small = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            # Ultra-fast optical flow input
+            flow_small = cv2.resize(gray_small, (240, 135))
 
             sharpness = self.calculate_sharpness(small)
             brightness = self.calculate_brightness(small)
@@ -190,7 +192,7 @@ class FrameQualityAssessor:
                 "sharpness": sharpness,
                 "brightness": brightness,
                 "small": small,
-                "gray_small": gray_small,
+                "flow_small": flow_small,
             })
 
         if not scored:
@@ -204,19 +206,20 @@ class FrameQualityAssessor:
         logger.info(f"[QUALITY] Effective blur threshold: {effective_blur_threshold:.1f} "
                     f"(population 25th-pct: {adaptive_threshold:.1f})")
 
-        # ---- Step 3: Motion magnitude calculation ---------------------------
-        prev_gray = None
+        # ---- Step 3: Fast Motion magnitude calculation ----------------------
+        prev_flow = None
         for item in scored:
-            gray = item["gray_small"]
-            if prev_gray is not None:
+            flow_img = item["flow_small"]
+            if prev_flow is not None:
                 flow = cv2.calcOpticalFlowFarneback(
-                    prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                    prev_flow, flow_img, None, 0.5, 2, 11, 2, 5, 1.1, 0
                 )
                 mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                item["motion"] = float(np.mean(mag))
+                # Scale motion magnitude back to 1080p equivalent
+                item["motion"] = float(np.mean(mag)) * (1080.0 / 135.0)
             else:
-                item["motion"] = 5.0  # Assume moderate motion for first frame
-            prev_gray = gray
+                item["motion"] = 5.0  # Moderate baseline for initial frame
+            prev_flow = flow_img
 
         # Build composite quality score
         max_sharpness = max(sharpness_vals) + 1e-6

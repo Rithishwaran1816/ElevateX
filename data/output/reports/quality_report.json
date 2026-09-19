@@ -1,0 +1,68 @@
+{
+  "project_name": "ElevateX \u2014 Drone 3D Reconstruction System",
+  "problem_statement": "SIH26158",
+  "timestamp": "2026-09-10 13:26:54",
+  "processing_time_seconds": 2762.34,
+  "reconstruction_engine": "COLMAP",
+  "frame_quality": {
+    "total_input_frames": 283,
+    "selected_keyframes": 160,
+    "rejected_blur": 43,
+    "rejected_exposure": 0,
+    "rejected_duplicates": 0,
+    "average_sharpness": 2692.41,
+    "blur_threshold_used": 1860.4024729194339,
+    "selection_algorithm": "segment_based_quality_selection"
+  },
+  "video_properties": {
+    "filename": "WhatsApp_Video_2026-08-31_at_9.45.12_AM.mp4",
+    "resolution": "1920x1080",
+    "fps": 30.0,
+    "duration_seconds": 81.67,
+    "total_video_frames": 2450
+  },
+  "reconstruction_metrics": {
+    "registered_images": 160,
+    "total_input_images": 160,
+    "registration_percentage": 100.0,
+    "sparse_points": 113954,
+    "dense_points": 5422166,
+    "mesh_vertices": 76793,
+    "mesh_faces": 149999,
+    "mean_reprojection_error_pixels": 0.542,
+    "mean_track_length": 8.15,
+    "surface_coverage_assessment": "HIGH_DENSITY"
+  },
+  "quality_assessment": {
+    "quality_status": "MODERATE",
+    "quality_explanation": "Reconstruction quality is moderate. 100.0% of images registered, mean reprojection error 0.54px. Some regions may be incomplete or inaccurate. Review diagnostic messages for specific issues.",
+    "diagnostic_messages": [
+      "[OK] Registration: 100.0% (160/160 images)",
+      "[OK] Mean reprojection error: 0.54px",
+      "[OK] Sparse points: 113,954",
+      "Camera trajectory has an erratic jump at position 4 (jump: 20832724.96, median spacing: 0.13, ratio: 160445343.4x). Possible causes: wrong loop closure match, missing overlap at that point.",
+      "Reconstruction is highly elongated (axis ratio 554.1:1). This typically indicates drift in the camera chain \u2014 the model does not form a consistent 3D structure. Possible causes: missing loop closure, single-pass linear trajectory with poor lateral baseline, or scale drift."
+    ],
+    "validation_result": "MODERATE"
+  },
+  "sensor_availability": {
+    "GPS": "NOT AVAILABLE",
+    "Flight Metadata": "NOT AVAILABLE",
+    "IMU": "NOT AVAILABLE",
+    "RTK": "NOT AVAILABLE",
+    "Camera Intrinsics": "NOT AVAILABLE"
+  },
+  "georeferencing": {
+    "georeferencing_status": "LOCAL_COORDINATE_SYSTEM",
+    "coordinate_system": "Local Euclidean",
+    "utm_zone": null,
+    "bounding_box": null,
+    "note": "GPS/WGS84 coordinates indicate spatial reference only. Georeferencing does NOT guarantee geometric reconstruction accuracy. See 'metric_accuracy' for reconstruction quality.",
+    "metric_accuracy": "No georeferencing. 3D model is in a local relative Euclidean space. Scale and absolute position are not metrically calibrated."
+  },
+  "future_modules_readiness": {
+    "neural_radiance_fields_nerf": "ARCHITECTED",
+    "3d_gaussian_splatting": "ARCHITECTED",
+    "ai_depth_super_resolution": "ARCHITECTED"
+  }
+}
